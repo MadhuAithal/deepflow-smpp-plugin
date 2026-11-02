@@ -1,0 +1,41 @@
+# DeepFlow agent group configuration for the SMPP plugin.
+# Apply with:  make config GROUP_ID=g-xxxxxxxxxx
+#
+# `agent-group-config update` REPLACES the group's whole configuration, so keep
+# every setting you need in this one file.
+
+inputs:
+  resources:
+    # required for a plain Linux host (no Kubernetes, no cloud domain) to register
+    workload_resource_sync_enabled: true
+  ebpf:
+    socket:
+      kprobe:
+        whitelist:
+          # capture the SMPP port even though the agent has no built-in parser for it
+          ports: "2775"
+
+processors:
+  request_log:
+    application_protocol_inference:
+      # the agent's defaults plus Custom, which is how plugin protocols are reported
+      enabled_protocols:
+        - HTTP
+        - HTTP2
+        - MySQL
+        - Redis
+        - Kafka
+        - DNS
+        - TLS
+        - Custom
+
+plugins:
+  # the name given to `deepflow-ctl plugin create --name`
+  wasm_plugins:
+    - smpp
+
+global:
+  communication:
+    # MiB. Lets the agent receive larger messages once configured. The agent's
+    # built-in default before it gets this config is 1 MiB, so keep smpp.wasm under it.
+    grpc_buffer_size: 8

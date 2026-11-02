@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""
+smpp-delivery: OTP delivery report from DeepFlow's SMPP records.
+
+Joins each submit_sm (accepted by the operator, with a message ID) to its delivery
+receipt (deliver_sm with the same message ID) and reports:
+  submit latency      submit_sm -> submit_sm_resp           (measured by DeepFlow)
+  time to deliver     operator's acceptance -> receipt arrives
+  outcome             DELIVRD / UNDELIV / ... or "no receipt yet"
+plus throttled / rejected submits.
+
+Usage:  smpp-delivery [minutes]          look back this many minutes (default 15)
+        smpp-delivery [minutes] --all    also list every message
+
+Environment:  DEEPFLOW_IP (default 10.233.233.1)   SMPP_PORT (default 2775)
+"""
+import json
+import os
+import statistics
+import sys
+import urllib.parse
+import urllib.request
+from datetime import datetime
+
+DEEPFLOW_IP = os.environ.get("DEEPFLOW_IP", "10.233.233.1")
+SMPP_PORT = int(os.environ.get("SMPP_PORT", "2775"))
+QUERIER = f"http://{DEEPFLOW_IP}:20416/v1/query/"
+# receipts are stored reversed (client_port = SMPP port), so match either side
+PORT_FILTER = f"(server_port={SMPP_PORT} OR client_port={SMPP_PORT})"
+
+
+def query(sql):
+    data = urllib.parse.urlencode({"db": "flow_log", "sql": sql}).encode()
+    with urllib.request.urlopen(urllib.request.Request(QUERIER, data=data), timeout=30) as r:
+        d = json.load(r)
+    if d.get("OPT_STATUS") != "SUCCESS":
+        sys.exit(f"query failed: {d.get('DESCRIPTION')}\n{sql}")
+    res = d.get("result") or {}
+    cols = res.get("columns") or []
+    return [dict(zip(cols, row)) for row in (res.get("values") or [])]
+
+
+def ts(s):
+    """'2026-11-02T17:14:26.012478+08:00' -> aware datetime in local time."""
+    return datetime.fromisoformat(s).astimezone()
+
+
+def attrs(row):
+    return dict(zip(row.get("attribute_names") or [], row.get("attribute_values") or []))
+
+
+def pct(values, p):
+    if not values:
+        return None
+    v = sorted(values)
+    return v[min(len(v) - 1, round(p / 100 * (len(v) - 1)))]
+
+
+def fmt_ms(us):
+    return "-" if us is None else f"{us / 1000:.0f} ms"
+
+
+def fmt_s(sec):
+    return "-" if sec is None else f"{sec:.1f} s"
+
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    show_all = "--all" in sys.argv
+    minutes = int(args[0]) if args else 15
+    since = int(datetime.now().timestamp()) - minutes * 60
+
+    submits = query(
+        "SELECT start_time, type, tap_side, request_id, response_code, response_exception, "
+        "response_result, response_duration, attribute_names, attribute_values "
+        f"FROM l7_flow_log WHERE request_type='submit_sm' AND type IN (1,2) AND {PORT_FILTER} "
+        f"AND time >= {since} LIMIT 20000")
+    receipts = query(
+        "SELECT start_time, tap_side, attribute_names, attribute_values "
+        f"FROM l7_flow_log WHERE request_type='deliver_sm' AND {PORT_FILTER} "
+        f"AND time >= {since} LIMIT 20000")
+
+    # --- submits: the same message is usually seen at several observation points; merge by message ID
+    msgs = {}            # message_id -> info
+    refused = {}         # (tap_side) -> {request_id: exception}
+    for r in submits:
+        code = r.get("response_code")
+        mid = (r.get("response_result") or "").strip()
+        if code not in (0, None) or not mid:
+            if code not in (0, None):
+                refused.setdefault(r["tap_side"], {})[r["request_id"]] = r.get("response_exception") or str(code)
+            continue
+        m = msgs.setdefault(mid, {"submit": ts(r["start_time"]), "latency_us": None, "dest": "", "receipt": None,
+                                  "stat": None, "err": None})
+        m["submit"] = min(m["submit"], ts(r["start_time"]))
+        a = attrs(r)
+        m["dest"] = m["dest"] or a.get("smpp.dest_prefix", "")
+        if r.get("type") == 2 and r.get("response_duration"):
+            m["latency_us"] = max(m["latency_us"] or 0, r["response_duration"])
+
+    # --- receipts: keep only real receipts (command deliver_sm, not the sender's deliver_sm_resp)
+    orphans = 0
+    for r in receipts:
+        a = attrs(r)
+        if a.get("smpp.command") != "deliver_sm" or a.get("smpp.receipt") != "true":
+            continue
+        mid = a.get("smpp.message_id", "")
+        t = ts(r["start_time"])
+        m = msgs.get(mid)
+        if m is None:
+            orphans += 1   # receipt for a message submitted before the look-back window
+            continue
+        if m["receipt"] is None or t < m["receipt"]:
+            m["receipt"], m["stat"], m["err"] = t, a.get("smpp.receipt_stat"), a.get("smpp.receipt_err")
+        m["dest"] = m["dest"] or a.get("smpp.dest_prefix", "")
+
+    # throttled/rejected: count per observation point and take the best-covered one
+    refused_n = max((len(v) for v in refused.values()), default=0)
+    refused_kinds = {}
+    if refused:
+        best = max(refused.values(), key=len)
+        for exc in best.values():
+            refused_kinds[exc] = refused_kinds.get(exc, 0) + 1
+
+    accepted = len(msgs)
+    with_receipt = [m for m in msgs.values() if m["receipt"]]
+    delivered = [m for m in with_receipt if m["stat"] == "DELIVRD"]
+    not_delivered = [m for m in with_receipt if m["stat"] != "DELIVRD"]
+    pending = accepted - len(with_receipt)
+    ttd = [(m["receipt"] - m["submit"]).total_seconds() for m in delivered]
+    lat = [m["latency_us"] for m in msgs.values() if m["latency_us"]]
+
+    print(f"\nSMPP delivery report, last {minutes} min (port {SMPP_PORT})\n")
+    print(f"  Submitted (accepted + refused)   {accepted + refused_n}")
+    print(f"  Accepted by operator             {accepted}")
+    print(f"  Refused by operator              {refused_n}"
+          + (f"   ({', '.join(f'{k} x{v}' for k, v in refused_kinds.items())})" if refused_kinds else ""))
+    print(f"  Delivered (DELIVRD)              {len(delivered)}"
+          + (f"   {len(delivered) / accepted:.0%} of accepted" if accepted else ""))
+    print(f"  Not delivered (UNDELIV etc.)     {len(not_delivered)}")
+    print(f"  No receipt yet                   {pending}")
+    if orphans:
+        print(f"  Receipts for older messages      {orphans}   (submitted before the window)")
+    print()
+    print(f"  Submit latency      avg {fmt_ms(statistics.mean(lat) if lat else None)}   "
+          f"p95 {fmt_ms(pct(lat, 95))}   ({len(lat)} paired)")
+    print(f"  Time to deliver     avg {fmt_s(statistics.mean(ttd) if ttd else None)}   "
+          f"p95 {fmt_s(pct(ttd, 95))}   max {fmt_s(max(ttd) if ttd else None)}")
+
+    if show_all and msgs:
+        print("\n  message_id  destination    submitted  latency   delivered-in  outcome")
+        for mid, m in sorted(msgs.items(), key=lambda kv: kv[1]["submit"]):
+            dt = (m["receipt"] - m["submit"]).total_seconds() if m["receipt"] else None
+            print(f"  {mid:<10}  {m['dest']:<13}  {m['submit']:%H:%M:%S}   {fmt_ms(m['latency_us']):>7}   "
+                  f"{fmt_s(dt):>10}    {m['stat'] or 'no receipt'}{'' if m['err'] in (None, '000') else ' err ' + m['err']}")
+    print()
+
+
+if __name__ == "__main__":
+    main()

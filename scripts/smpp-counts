@@ -1,0 +1,29 @@
+#!/bin/bash
+# smpp-counts: how many SMPP records DeepFlow stored, by command, record type and capture side.
+#
+# Usage:  smpp-counts [minutes]        (default 15)
+# Env:    DEEPFLOW_IP (default 10.233.233.1)   SMPP_PORT (default 2775)
+#
+# type: 0 = request only, 1 = response only, 2 = paired session (has response_duration)
+# tap_side: c-p = client process, s-p = server process, local = both on one host
+set -euo pipefail
+MIN=${1:-15}
+IP=${DEEPFLOW_IP:-10.233.233.1}
+PORT=${SMPP_PORT:-2775}
+SINCE=$(( $(date +%s) - MIN * 60 ))   # the querier has no now()
+curl -sS -XPOST "http://$IP:20416/v1/query/" \
+  --data-urlencode "db=flow_log" \
+  --data-urlencode "sql=SELECT request_type, type, tap_side, Count(row) AS n, Avg(response_duration) AS avg_us FROM l7_flow_log WHERE (server_port=$PORT OR client_port=$PORT) AND time >= $SINCE GROUP BY request_type, type, tap_side ORDER BY request_type, type LIMIT 200" \
+| python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if d.get("OPT_STATUS") != "SUCCESS":
+    sys.exit(d.get("DESCRIPTION"))
+r = d["result"]
+cols = r["columns"]
+print("%-20s %4s %-8s %6s %8s" % ("request_type", "type", "tap_side", "n", "avg_ms"))
+for v in r.get("values") or []:
+    row = dict(zip(cols, v))
+    print("%-20s %4s %-8s %6s %8.0f" % (row["request_type"] or "-", row["type"], row["tap_side"],
+                                       row["n"], (row.get("avg_us") or 0) / 1000))
+'
