@@ -99,6 +99,21 @@ systemd service on the same host).
 
 `scripts/sanity.sh` checks the whole chain after a reboot or OS upgrade.
 
+### Grafana dashboard
+
+`deploy/grafana-smpp-dashboard.json` is a ready-made "SMPP delivery" dashboard for
+DeepFlow's Grafana: delivery rate, accepted vs refused submits, submit latency, time to
+deliver, delivery outcomes, refusal reasons and a per-message table. It queries ClickHouse
+directly through the "DeepFlow ClickHouse" datasource that DeepFlow's Compose deployment
+provisions, and counts each message once even when several capture points recorded it.
+
+```sh
+bash scripts/import-dashboard.sh     # then open http://<deepflow-ip>:3000/d/smpp-delivery
+```
+
+To change panels, edit `scripts/make-dashboard.py` and regenerate with
+`python3 scripts/make-dashboard.py`.
+
 ## Field mapping
 
 | DeepFlow field | From the PDU |

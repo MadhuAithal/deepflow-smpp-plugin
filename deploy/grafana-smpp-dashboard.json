@@ -1,0 +1,921 @@
+{
+  "uid": "smpp-delivery",
+  "title": "SMPP delivery",
+  "description": "SMS delivery observed by DeepFlow's eBPF agent with the SMPP plugin. https://github.com/MadhuAithal/deepflow-smpp-plugin",
+  "tags": [
+    "smpp",
+    "sms",
+    "deepflow"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 2,
+  "editable": true,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "smpp_port",
+        "label": "SMPP port",
+        "type": "textbox",
+        "query": "2775",
+        "current": {
+          "text": "2775",
+          "value": "2775"
+        },
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Accepted",
+      "description": "Submits the operator accepted (it returned a message ID). Each message counted once.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "DeepFlow ClickHouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "A",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 1,
+          "rawSql": "SELECT count() AS accepted FROM (\n  SELECT response_result AS id,\n         min(start_time) AS submitted,\n         maxIf(response_duration, type = 2) AS latency_us,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS dest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code = 0 AND response_result != ''\n    AND $__timeFilter(time)\n  GROUP BY id)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Delivered",
+      "description": "Share of accepted messages with a DELIVRD receipt.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "DeepFlow ClickHouse"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "A",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 1,
+          "rawSql": "SELECT if(count() = 0, NULL, countIf(r.stat = 'DELIVRD') / count()) AS delivered\nFROM (\n  SELECT response_result AS id,\n         min(start_time) AS submitted,\n         maxIf(response_duration, type = 2) AS latency_us,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS dest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code = 0 AND response_result != ''\n    AND $__timeFilter(time)\n  GROUP BY id) AS a\nLEFT JOIN (\n  SELECT attribute_values[indexOf(attribute_names, 'smpp.message_id')] AS id,\n         min(start_time) AS received,\n         argMin(attribute_values[indexOf(attribute_names, 'smpp.receipt_stat')], start_time) AS stat,\n         argMin(attribute_values[indexOf(attribute_names, 'smpp.receipt_err')], start_time) AS err,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS rdest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'deliver_sm'\n    AND attribute_values[indexOf(attribute_names, 'smpp.command')] = 'deliver_sm' AND attribute_values[indexOf(attribute_names, 'smpp.receipt')] = 'true'\n    AND time >= $__fromTime\n  GROUP BY id) AS r ON a.id = r.id"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.8
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Refused",
+      "description": "Submits the operator refused (throttled, rejected, system error).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "DeepFlow ClickHouse"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "A",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 1,
+          "rawSql": "SELECT ifNull(max(c), 0) AS refused FROM (SELECT observation_point, count() AS c \n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code IS NOT NULL AND response_code != 0\n    AND $__timeFilter(time) GROUP BY observation_point)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "No receipt yet",
+      "description": "Accepted messages with no delivery receipt so far.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "DeepFlow ClickHouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "A",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 1,
+          "rawSql": "SELECT countIf(r.id IS NULL) AS no_receipt\nFROM (\n  SELECT response_result AS id,\n         min(start_time) AS submitted,\n         maxIf(response_duration, type = 2) AS latency_us,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS dest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code = 0 AND response_result != ''\n    AND $__timeFilter(time)\n  GROUP BY id) AS a\nLEFT JOIN (\n  SELECT attribute_values[indexOf(attribute_names, 'smpp.message_id')] AS id,\n         min(start_time) AS received,\n         argMin(attribute_values[indexOf(attribute_names, 'smpp.receipt_stat')], start_time) AS stat,\n         argMin(attribute_values[indexOf(attribute_names, 'smpp.receipt_err')], start_time) AS err,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS rdest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'deliver_sm'\n    AND attribute_values[indexOf(attribute_names, 'smpp.command')] = 'deliver_sm' AND attribute_values[indexOf(attribute_names, 'smpp.receipt')] = 'true'\n    AND time >= $__fromTime\n  GROUP BY id) AS r ON a.id = r.id\nSETTINGS join_use_nulls = 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Latency p95",
+      "description": "submit_sm to submit_sm_resp, 95th percentile.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "DeepFlow ClickHouse"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "A",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 1,
+          "rawSql": "SELECT quantile(0.95)(latency_us) / 1000 AS p95_ms FROM (\n  SELECT response_result AS id,\n         min(start_time) AS submitted,\n         maxIf(response_duration, type = 2) AS latency_us,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS dest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code = 0 AND response_result != ''\n    AND $__timeFilter(time)\n  GROUP BY id) WHERE latency_us > 0"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Deliver p95",
+      "description": "From the operator accepting a message to its DELIVRD receipt, 95th percentile.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "DeepFlow ClickHouse"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "A",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 1,
+          "rawSql": "SELECT quantile(0.95)((toUnixTimestamp64Micro(r.received) - toUnixTimestamp64Micro(a.submitted)) / 1e6) AS p95_s\nFROM (\n  SELECT response_result AS id,\n         min(start_time) AS submitted,\n         maxIf(response_duration, type = 2) AS latency_us,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS dest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code = 0 AND response_result != ''\n    AND $__timeFilter(time)\n  GROUP BY id) AS a\nINNER JOIN (\n  SELECT attribute_values[indexOf(attribute_names, 'smpp.message_id')] AS id,\n         min(start_time) AS received,\n         argMin(attribute_values[indexOf(attribute_names, 'smpp.receipt_stat')], start_time) AS stat,\n         argMin(attribute_values[indexOf(attribute_names, 'smpp.receipt_err')], start_time) AS err,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS rdest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'deliver_sm'\n    AND attribute_values[indexOf(attribute_names, 'smpp.command')] = 'deliver_sm' AND attribute_values[indexOf(attribute_names, 'smpp.receipt')] = 'true'\n    AND time >= $__fromTime\n  GROUP BY id) AS r ON a.id = r.id\nWHERE r.stat = 'DELIVRD'"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Submits: accepted vs refused",
+      "description": "Accepted and refused submits per interval.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "DeepFlow ClickHouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "A",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeInterval(submitted) AS t, count() AS accepted\nFROM (\n  SELECT response_result AS id,\n         min(start_time) AS submitted,\n         maxIf(response_duration, type = 2) AS latency_us,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS dest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code = 0 AND response_result != ''\n    AND $__timeFilter(time)\n  GROUP BY id)\nGROUP BY t ORDER BY t"
+        },
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "B",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 0,
+          "rawSql": "SELECT t, max(c) AS refused FROM (\n  SELECT $__timeInterval(time) AS t, observation_point, count() AS c \n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code IS NOT NULL AND response_code != 0\n    AND $__timeFilter(time)\n  GROUP BY t, observation_point)\nGROUP BY t ORDER BY t"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "accepted"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "refused"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Submit latency",
+      "description": "How long the operator took to accept each message (submit_sm to submit_sm_resp).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "DeepFlow ClickHouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "A",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeInterval(submitted) AS t,\n       avg(latency_us) / 1000 AS avg_ms,\n       quantile(0.95)(latency_us) / 1000 AS p95_ms\nFROM (\n  SELECT response_result AS id,\n         min(start_time) AS submitted,\n         maxIf(response_duration, type = 2) AS latency_us,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS dest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code = 0 AND response_result != ''\n    AND $__timeFilter(time)\n  GROUP BY id)\nWHERE latency_us > 0\nGROUP BY t ORDER BY t"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Time to deliver",
+      "description": "From the operator accepting a message to its DELIVRD receipt, by submit time.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "DeepFlow ClickHouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "A",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeInterval(a.submitted) AS t,\n       avg((toUnixTimestamp64Micro(r.received) - toUnixTimestamp64Micro(a.submitted)) / 1e6) AS avg_s,\n       quantile(0.95)((toUnixTimestamp64Micro(r.received) - toUnixTimestamp64Micro(a.submitted)) / 1e6) AS p95_s\nFROM (\n  SELECT response_result AS id,\n         min(start_time) AS submitted,\n         maxIf(response_duration, type = 2) AS latency_us,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS dest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code = 0 AND response_result != ''\n    AND $__timeFilter(time)\n  GROUP BY id) AS a\nINNER JOIN (\n  SELECT attribute_values[indexOf(attribute_names, 'smpp.message_id')] AS id,\n         min(start_time) AS received,\n         argMin(attribute_values[indexOf(attribute_names, 'smpp.receipt_stat')], start_time) AS stat,\n         argMin(attribute_values[indexOf(attribute_names, 'smpp.receipt_err')], start_time) AS err,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS rdest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'deliver_sm'\n    AND attribute_values[indexOf(attribute_names, 'smpp.command')] = 'deliver_sm' AND attribute_values[indexOf(attribute_names, 'smpp.receipt')] = 'true'\n    AND time >= $__fromTime\n  GROUP BY id) AS r ON a.id = r.id\nWHERE r.stat = 'DELIVRD'\nGROUP BY t ORDER BY t"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "piechart",
+      "title": "Delivery outcomes",
+      "description": "Receipt status of accepted messages.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "DeepFlow ClickHouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "A",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 1,
+          "rawSql": "SELECT if(r.id IS NULL, 'NO RECEIPT YET', r.stat) AS outcome, count() AS messages\nFROM (\n  SELECT response_result AS id,\n         min(start_time) AS submitted,\n         maxIf(response_duration, type = 2) AS latency_us,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS dest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code = 0 AND response_result != ''\n    AND $__timeFilter(time)\n  GROUP BY id) AS a\nLEFT JOIN (\n  SELECT attribute_values[indexOf(attribute_names, 'smpp.message_id')] AS id,\n         min(start_time) AS received,\n         argMin(attribute_values[indexOf(attribute_names, 'smpp.receipt_stat')], start_time) AS stat,\n         argMin(attribute_values[indexOf(attribute_names, 'smpp.receipt_err')], start_time) AS err,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS rdest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'deliver_sm'\n    AND attribute_values[indexOf(attribute_names, 'smpp.command')] = 'deliver_sm' AND attribute_values[indexOf(attribute_names, 'smpp.receipt')] = 'true'\n    AND time >= $__fromTime\n  GROUP BY id) AS r ON a.id = r.id\nGROUP BY outcome ORDER BY messages DESC\nSETTINGS join_use_nulls = 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "DELIVRD"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UNDELIV"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "NO RECEIPT YET"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "gray"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "pieType": "donut",
+        "displayLabels": [
+          "name",
+          "value"
+        ],
+        "legend": {
+          "displayMode": "list",
+          "placement": "right",
+          "showLegend": true,
+          "values": [
+            "value",
+            "percent"
+          ]
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "bargauge",
+      "title": "Refusal reasons",
+      "description": "Why the operator refused submits (SMPP command_status).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "DeepFlow ClickHouse"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 12,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "A",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 1,
+          "rawSql": "SELECT reason, max(c) AS submits FROM (\n  SELECT observation_point, if(response_exception = '', toString(response_code), response_exception) AS reason, count() AS c\n  \n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code IS NOT NULL AND response_code != 0\n    AND $__timeFilter(time)\n  GROUP BY observation_point, reason)\nGROUP BY reason ORDER BY submits DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Messages",
+      "description": "Every accepted message: when, where to (masked), latency, delivery time and outcome.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "DeepFlow ClickHouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "DeepFlow ClickHouse"
+          },
+          "refId": "A",
+          "queryType": "sql",
+          "editorType": "sql",
+          "format": 1,
+          "rawSql": "SELECT a.submitted AS submitted,\n       a.id AS message_id,\n       if(a.dest != '', a.dest, ifNull(r.rdest, '')) AS destination,\n       if(a.latency_us > 0, a.latency_us / 1000, NULL) AS submit_latency_ms,\n       if(r.id IS NULL, NULL, (toUnixTimestamp64Micro(r.received) - toUnixTimestamp64Micro(a.submitted)) / 1e6) AS delivered_in_s,\n       if(r.id IS NULL, 'no receipt yet', r.stat) AS outcome,\n       if(r.err IN ('', '000') OR r.err IS NULL, '', r.err) AS error\nFROM (\n  SELECT response_result AS id,\n         min(start_time) AS submitted,\n         maxIf(response_duration, type = 2) AS latency_us,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS dest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'submit_sm' AND type IN (1, 2)\n    AND response_code = 0 AND response_result != ''\n    AND $__timeFilter(time)\n  GROUP BY id) AS a\nLEFT JOIN (\n  SELECT attribute_values[indexOf(attribute_names, 'smpp.message_id')] AS id,\n         min(start_time) AS received,\n         argMin(attribute_values[indexOf(attribute_names, 'smpp.receipt_stat')], start_time) AS stat,\n         argMin(attribute_values[indexOf(attribute_names, 'smpp.receipt_err')], start_time) AS err,\n         any(attribute_values[indexOf(attribute_names, 'smpp.dest_prefix')]) AS rdest\n  FROM flow_log.l7_flow_log\n  WHERE (server_port = ${smpp_port} OR client_port = ${smpp_port}) AND request_type = 'deliver_sm'\n    AND attribute_values[indexOf(attribute_names, 'smpp.command')] = 'deliver_sm' AND attribute_values[indexOf(attribute_names, 'smpp.receipt')] = 'true'\n    AND time >= $__fromTime\n  GROUP BY id) AS r ON a.id = r.id\nORDER BY submitted DESC\nLIMIT 200\nSETTINGS join_use_nulls = 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "submit_latency_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "displayName",
+                "value": "submit latency"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "delivered_in_s"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "displayName",
+                "value": "delivered in"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "outcome"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "DELIVRD": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "UNDELIV": {
+                        "color": "red",
+                        "index": 1
+                      },
+                      "no receipt yet": {
+                        "color": "gray",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "submitted",
+            "desc": true
+          }
+        ]
+      }
+    }
+  ]
+}
