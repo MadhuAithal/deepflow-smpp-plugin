@@ -12,11 +12,16 @@ inputs:
     socket:
       kprobe:
         whitelist:
-          # capture the SMPP port even though the agent has no built-in parser for it
-          ports: "2775"
+          # capture the SMPP ports even though the agent has no built-in parser for them:
+          # 2775 = clients -> gateway (or operator), 2776 = gateway -> operator in the Jasmin lab
+          ports: "2775,2776"
 
 processors:
   request_log:
+    tunning:
+      # bytes kept per socket read/write (default 1024). Gateways like Jasmin write many
+      # SMPP PDUs in one call; 1024 bytes keeps only the first ~7. 16384 is the eBPF maximum.
+      payload_truncation: 16384
     application_protocol_inference:
       # the agent's defaults plus Custom, which is how plugin protocols are reported
       enabled_protocols:

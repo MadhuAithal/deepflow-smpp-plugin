@@ -11,15 +11,18 @@ It speaks just enough SMPP 3.4 to behave like a real operator:
     that asked for one; about 1 in 8 comes back UNDELIV instead of DELIVRD
 
 Run:  python3 fake_smsc.py            (listens on 127.0.0.1:2775)
+      SMSC_PORT=2776 python3 fake_smsc.py   (behind Jasmin, see lab/jasmin)
 Stop: Ctrl+C
 No dependencies beyond Python 3.8+.
 """
 import asyncio
+import os
 import random
 import struct
 import time
 
-HOST, PORT = "127.0.0.1", 2775
+HOST = "127.0.0.1"
+PORT = int(os.environ.get("SMSC_PORT", "2775"))
 
 # command_id values (a response is the request id with the top bit set)
 BIND_RECEIVER, BIND_TRANSMITTER, BIND_TRANSCEIVER = 0x01, 0x02, 0x09

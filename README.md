@@ -114,6 +114,14 @@ bash scripts/import-dashboard.sh     # then open http://<deepflow-ip>:3000/d/smp
 To change panels, edit `scripts/make-dashboard.py` and regenerate with
 `python3 scripts/make-dashboard.py`.
 
+### Two hops through a real SMS gateway
+
+`lab/jasmin` puts [Jasmin](https://github.com/jookies/jasmin), an open-source SMPP gateway, between
+the sender and the fake operator, so the plugin sees platform → gateway (port 2775) and
+gateway → operator (port 2776) separately. In the first run the platform saw 14 ms acknowledgements
+and no refusals, while the operator took 230 ms, throttled 5 messages, and the throttled OTPs
+arrived about two minutes late. See [lab/jasmin/README.md](lab/jasmin/README.md).
+
 ## Field mapping
 
 | DeepFlow field | From the PDU |

@@ -5,9 +5,12 @@ waits for delivery receipts, then unbinds.
 
 Setup:  python3 -m venv ~/smpp-venv && ~/smpp-venv/bin/pip install smpplib
 Run:    ~/smpp-venv/bin/python send_otps.py            (10 OTPs to 127.0.0.1:2775)
+        WAIT=150 ~/smpp-venv/bin/python send_otps.py 30   (listen 150 s for late receipts)
         ~/smpp-venv/bin/python send_otps.py 25         (25 OTPs)
 """
+import os
 import random
+import select
 import sys
 import time
 
@@ -15,7 +18,7 @@ import smpplib.client
 import smpplib.consts
 
 COUNT = int(sys.argv[1]) if len(sys.argv) > 1 else 10
-WAIT_FOR_RECEIPTS = 8  # seconds to keep listening after the last submit
+WAIT_FOR_RECEIPTS = int(os.environ.get("WAIT", "8"))  # seconds to keep listening after the last submit
 
 client = smpplib.client.Client("127.0.0.1", 2775, allow_unknown_opt_params=True)
 sent = {}
@@ -54,14 +57,14 @@ for _ in range(COUNT):
     )
     print(f"submit_sm        seq={pdu.sequence:<4} to={phone}")
 
-# keep reading responses and receipts for a while
+# keep reading responses and receipts for a while. Wait until data is waiting, then read a
+# whole PDU: a timeout in the middle of a PDU would lose our place in the stream.
 deadline = time.time() + WAIT_FOR_RECEIPTS
-client._socket.settimeout(0.5)
+client._socket.settimeout(10)
 while time.time() < deadline:
-    try:
+    ready, _, _ = select.select([client._socket], [], [], 0.5)
+    if ready:
         client.read_once()
-    except Exception:  # read timeout: nothing arrived in the last 0.5 s
-        pass
 
 client.unbind()
 client.disconnect()

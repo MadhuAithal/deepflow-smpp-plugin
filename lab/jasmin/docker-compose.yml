@@ -1,0 +1,55 @@
+# Jasmin SMS gateway between the OTP sender and the fake operator:
+#
+#   send_otps.py --SMPP:2775--> Jasmin --SMPP:2776--> fake_smsc.py
+#
+# Redis uses 6380, not 6379, to stay clear of any Redis already on this machine.
+# Host networking keeps it simple: the eBPF agent sees both hops as local sockets, and
+# Jasmin reaches fake_smsc.py on 127.0.0.1. Ports used on this machine:
+# 2775 (Jasmin SMPP server), 8990 (jCli), 1401 (HTTP API), 6380 (Redis), 5672/15672 (RabbitMQ).
+#
+#   docker compose up -d            then: python3 setup_jasmin.py
+#   docker compose down             stop (configuration is kept in the jasmin-store volume)
+
+services:
+  redis:
+    image: redis:alpine
+    network_mode: host
+    command: ["redis-server", "--bind", "127.0.0.1", "--port", "6380", "--save", ""]
+    restart: unless-stopped
+    healthcheck:
+      test: redis-cli -p 6380 ping | grep PONG
+      interval: 5s
+    deploy:
+      resources:
+        limits: {cpus: '0.2', memory: 128M}
+
+  rabbit-mq:
+    image: rabbitmq:3.10-management-alpine
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+    deploy:
+      resources:
+        limits: {cpus: '0.5', memory: 525M}
+
+  jasmin:
+    image: jookies/jasmin:latest
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      redis: {condition: service_healthy}
+      rabbit-mq: {condition: service_healthy}
+    environment:
+      REDIS_CLIENT_HOST: 127.0.0.1
+      REDIS_CLIENT_PORT: 6380
+      AMQP_BROKER_HOST: 127.0.0.1
+    volumes:
+      - jasmin-store:/etc/jasmin/store
+    deploy:
+      resources:
+        limits: {cpus: '1', memory: 256M}
+
+volumes:
+  jasmin-store:

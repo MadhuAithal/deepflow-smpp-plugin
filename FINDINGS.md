@@ -123,3 +123,35 @@ this with a dummy interface on a fixed address.
   than counting rows.
 - The Compose server's clock and timestamps are UTC+8. Convert before comparing with
   local logs.
+
+## 9. The default 1 KB payload limit drops traffic behind batching gateways
+
+By default the eBPF tracer keeps only the first **1024 bytes of each socket read or write**
+(`processors.request_log.tunning.payload_truncation`; the kernel side uses a 1 KB buffer unless
+this is raised). An SMPP client that writes one PDU per call is unaffected. A gateway is not:
+Jasmin (Twisted) writes many PDUs in a single call, and every PDU past the first kilobyte is
+silently dropped, with no error anywhere.
+
+Measured in the two-hop Jasmin lab (`lab/jasmin`), against ground truth from the sender's own
+log and Jasmin's `messages.log`:
+
+| Hop 1 (platform ↔ Jasmin) | 1024 bytes (default) | 16384 bytes |
+|---|---|---|
+| `submit_sm_resp` captured | 26 / 30 | 30 / 30 |
+| receipts captured | 17 / 23 | 15 / 15 |
+
+Hop 2 (Jasmin ↔ operator) was complete at 16384: 32 accepted + 5 throttled submits, 32 receipts.
+
+Set it to the eBPF maximum for SMPP:
+
+```yaml
+processors:
+  request_log:
+    tunning:
+      payload_truncation: 16384
+```
+
+Larger values cost memory per captured call, so this is a per-group setting rather than a
+default to change everywhere. It is `hot_update` in the config schema, but restart the agent
+and wait until the log shows the plugin loaded again before testing (about a minute): traffic
+sent before that is not parsed.
